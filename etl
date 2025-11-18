@@ -1,0 +1,164 @@
+import pandas as pd
+import gspread
+from datetime import date
+
+# ==============================================================================
+# FASE 1: FUNÇÕES DE EXTRAÇÃO (EXTRACT)
+# ==============================================================================
+def extrair_dados_de_arquivo(caminho_do_arquivo):
+    """
+    Função para extrair dados de arquivos .csv, configurada para o formato do relatório.
+    """
+    print(f"Iniciando extração de dados do arquivo CSV: {caminho_do_arquivo}...")
+    try:
+        if not caminho_do_arquivo.lower().endswith('.csv'):
+            print("Erro: O arquivo fornecido não é do tipo .csv.")
+            return None
+
+        # Leitura de CSV configurada para o seu arquivo: separador ';' e codificação 'latin-1'
+        df = pd.read_csv(caminho_do_arquivo, sep=';', encoding='latin-1', engine='python')
+        
+        print(f"Sucesso! {len(df)} linhas lidas do arquivo.")
+        return df
+        
+    except FileNotFoundError:
+        print(f"Erro: O arquivo não foi encontrado no caminho especificado: {caminho_do_arquivo}")
+        return None
+    except Exception as e:
+        print(f"Ocorreu um erro inesperado ao ler o arquivo: {e}")
+        return None
+
+# ==============================================================================
+# FASE 2: FUNÇÕES DE TRANSFORMAÇÃO (TRANSFORM)
+# ==============================================================================
+def transformar_dados(dataframe_principal, df_gestor):
+    """
+    Função para limpar, transformar e padronizar os dados do relatório anual.
+    Prepara os dados para análise no Power BI.
+    """
+    print("Iniciando transformação completa dos dados...")
+    
+    df_transformado = dataframe_principal.copy()
+
+    # 1. Dicionário para renomear todas as colunas para um formato padrão
+    novos_nomes = {
+        'ID do pedido': 'id_pedido', 'Marketplace': 'marketplace', 'Status': 'status',
+        'Data de Compra': 'data_compra', 'Nome da Conta': 'nome_conta', 'ASIN': 'asin',
+        'SKU Externo': 'sku_externo', 'SKU Interno': 'sku_interno', 'Título': 'titulo',
+        'Quantidade': 'quantidade', 'Preço Unitário': 'preco_unitario', 'Preço Total': 'preco_total',
+        'Comissão': 'comissao', 'Taxa de Envio': 'taxa_envio', 'Frete recebido': 'frete_recebido',
+        'Frete descontado': 'frete_descontado', 'Taxa de Serviço': 'taxa_servico',
+        'Cupom do Vendedor': 'cupom_vendedor', 'Cupom do Comprador': 'cupom_comprador',
+        'Moedas Sohpee': 'moedas_shopee', 'Embalagem para presente': 'embalagem_presente',
+        'Recebido do Marketplace': 'recebido_marketplace', 'Preço de Custo': 'preco_custo',
+        'Custo Extra': 'custo_extra', 'Imposto': 'imposto', 'Custo Eventual': 'custo_eventual',
+        'Lucro': 'lucro', 'Margem (%)': 'margem_percentual', 'Estado do Comprador': 'estado_comprador',
+        'Logística': 'logistica'
+    }
+    df_transformado.rename(columns=novos_nomes, inplace=True)
+
+    # 2. Limpeza e conversão de colunas numéricas e de porcentagem
+    print("Limpando e convertendo colunas numéricas...")
+    colunas_para_limpar = [
+        'preco_unitario', 'preco_total', 'comissao', 'taxa_envio', 'frete_recebido',
+        'frete_descontado', 'taxa_servico', 'cupom_vendedor', 'cupom_comprador', 'moedas_shopee',
+        'recebido_marketplace', 'preco_custo', 'custo_extra', 'imposto', 'custo_eventual', 'lucro'
+    ]
+    for col in colunas_para_limpar:
+        if col in df_transformado.columns:
+            # Remove 'R$', espaços, e converte vírgula para ponto
+            df_transformado[col] = df_transformado[col].astype(str).str.replace('R\$', '', regex=True).str.strip().str.replace(',', '.', regex=False)
+            df_transformado[col] = pd.to_numeric(df_transformado[col], errors='coerce')
+
+    # Limpa e converte a coluna de margem
+    if 'margem_percentual' in df_transformado.columns:
+        df_transformado['margem_percentual'] = df_transformado['margem_percentual'].astype(str).str.replace('%', '', regex=False).str.strip().str.replace(',', '.', regex=False)
+        df_transformado['margem_percentual'] = pd.to_numeric(df_transformado['margem_percentual'], errors='coerce') / 100
+
+    # 3. Conversão da coluna de data
+    print("Convertendo coluna de data...")
+    if 'data_compra' in df_transformado.columns:
+        df_transformado['data_compra'] = pd.to_datetime(df_transformado['data_compra'], format='%d/%m/%Y %H:%M', errors='coerce')
+
+    # 4. Adiciona a data da carga para controle histórico
+    hoje = date.today().strftime("%Y-%m-%d")
+    df_transformado['data_carga'] = hoje
+    
+    print("Transformação concluída. Dados prontos para a carga.")
+    return df_transformado
+
+# ==============================================================================
+# FASE 3: FUNÇÕES DE CARGA (LOAD)
+# ==============================================================================
+def carregar_dados_sheets(df_final, arquivo_credenciais_json, nome_planilha, nome_aba):
+    """
+    Função para carregar os dados no Google Sheets usando uma estratégia de APPEND definitiva,
+    garantindo a correta inserção do cabeçalho na linha 1.
+    """
+    print("Iniciando carga para o Google Sheets (modo APPEND definitivo)...")
+    try:
+        # Prepara os dados para a carga
+        if 'data_compra' in df_final.columns:
+            df_final['data_compra'] = df_final['data_compra'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        df_final = df_final.fillna('')
+        
+        # Autenticação e conexão
+        gc = gspread.service_account(filename=arquivo_credenciais_json)
+        spreadsheet = gc.open(nome_planilha)
+        worksheet = spreadsheet.worksheet(nome_aba)
+        
+        # --- LÓGICA DE CARGA DEFINITIVA ---
+        dados_existentes = worksheet.get_all_values()
+        
+        # Condição robusta para verificar se a planilha está funcionalmente vazia (sem cabeçalho)
+        if not dados_existentes or not any(dados_existentes[0]):
+            print("Planilha vazia ou sem cabeçalho. Limpando e carregando estrutura inicial...")
+            cabecalho = [df_final.columns.values.tolist()]
+            # Limpa a planilha para garantir um estado 100% limpo
+            worksheet.clear() 
+            worksheet.update(
+                range_name='A1', 
+                values=cabecalho + df_final.values.tolist()
+            )
+        else:
+            proxima_linha = len(dados_existentes) + 1
+            print(f"Acrescentando {len(df_final)} novas linhas a partir da linha {proxima_linha}...")
+            worksheet.update(
+                range_name=f'A{proxima_linha}', 
+                values=df_final.values.tolist()
+            )
+            
+        print("Carga para o Google Sheets concluída com sucesso!")
+    except Exception as e:
+        print(f"Ocorreu um erro inesperado durante a carga para o Google Sheets: {e}")
+# ==============================================================================
+# FUNÇÃO PRINCIPAL (ORQUESTRADOR)
+# ==============================================================================
+def main():
+    """
+    Função principal que orquestra todo o pipeline de ETL.
+    """
+    print("====== INÍCIO DO PIPELINE DE ETL ======")
+
+    # --- CONFIGURAÇÃO ---
+    caminho_arquivo_entrada = r"C:\Users\2346j\OneDrive\Área de Trabalho - Copia\SLAB\Kouk\Validação camada de dados\Simulamaximo1.CSV"
+    arquivo_credenciais = "validacaocamadadedadosk-01fe70d2d7db.json"
+    nome_da_planilha_sheets = "Vendas"
+    nome_da_aba_sheets = "Página1" 
+
+    # --- FASE 1: EXTRAÇÃO ---
+    dados_extraidos = extrair_dados_de_arquivo(caminho_arquivo_entrada)
+
+    if dados_extraidos is not None:
+        # --- FASE 2: TRANSFORMAÇÃO ---
+        dados_finais = transformar_dados(dados_extraidos, None) 
+        # --- FASE 3: CARGA ---
+        carregar_dados_sheets(dados_finais, arquivo_credenciais, nome_da_planilha_sheets, nome_da_aba_sheets)
+
+    print("====== FIM DO PIPELINE DE ETL ======")
+
+# Este bloco garante que a função main() seja executada quando rodamos o script
+if __name__ == "__main__":
+    main()
+
+
