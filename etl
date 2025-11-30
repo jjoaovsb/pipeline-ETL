@@ -141,8 +141,8 @@ def main():
     print("====== INÍCIO DO PIPELINE DE ETL ======")
 
     # --- CONFIGURAÇÃO ---
-    caminho_arquivo_entrada = r"C:\Users\2346j\OneDrive\Área de Trabalho - Copia\SLAB\Kouk\Validação camada de dados\Simulamaximo1.CSV"
-    arquivo_credenciais = "validacaocamadadedadosk-01fe70d2d7db.json"
+    caminho_arquivo_entrada = ********************"
+    arquivo_credenciais = "*******************"
     nome_da_planilha_sheets = "Vendas"
     nome_da_aba_sheets = "Página1" 
 
